@@ -1,0 +1,13 @@
+{
+  "name": "one-ten-react-ecommerce",
+  "version": "1.0.0",
+  "private": true,
+  "description": "React JS ecommerce landing page for ONE TEN men's fashion.",
+  "scripts": {
+    "start": "python server_sqlite.py"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

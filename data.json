@@ -1,0 +1,155 @@
+{
+  "products": [
+    {
+      "id": 1,
+      "category": "T-Shirts",
+      "name": "Red Core Tee",
+      "price": 5,
+      "oldPrice": 7,
+      "badge": "New",
+      "rating": "5.0",
+      "stock": 42,
+      "image": "assets/ai-products.png",
+      "crop": "0% 0%",
+      "description": "Soft red cotton tee for daily men's outfits."
+    },
+    {
+      "id": 2,
+      "category": "Shirts",
+      "name": "White Clean Shirt",
+      "price": 10,
+      "oldPrice": 12,
+      "badge": "-20%",
+      "rating": "4.8",
+      "stock": 25,
+      "image": "assets/ai-products.png",
+      "crop": "50% 0%",
+      "description": "White smart-casual shirt for clean day and evening looks."
+    },
+    {
+      "id": 3,
+      "category": "Pants",
+      "name": "Black Smart Pants",
+      "price": 9,
+      "oldPrice": null,
+      "badge": "",
+      "rating": "4.9",
+      "stock": 18,
+      "image": "assets/ai-products.png",
+      "crop": "100% 0%",
+      "description": "Black trousers with a clean shape for work and weekends."
+    },
+    {
+      "id": 4,
+      "category": "Caps",
+      "name": "Black Daily Cap",
+      "price": 3,
+      "oldPrice": 5,
+      "badge": "Hot",
+      "rating": "4.7",
+      "stock": 63,
+      "image": "assets/ai-products.png",
+      "crop": "0% 50%",
+      "description": "Simple black cap that completes casual outfits."
+    },
+    {
+      "id": 5,
+      "category": "Accessories",
+      "name": "Black Belt",
+      "price": 4,
+      "oldPrice": null,
+      "badge": "",
+      "rating": "4.6",
+      "stock": 38,
+      "image": "assets/ai-products.png",
+      "crop": "50% 50%",
+      "description": "Minimal black belt with clean everyday styling."
+    },
+    {
+      "id": 6,
+      "category": "Accessories",
+      "name": "Black Sunglasses",
+      "price": 6,
+      "oldPrice": 8,
+      "badge": "-25%",
+      "rating": "4.8",
+      "stock": 31,
+      "image": "assets/ai-products.png",
+      "crop": "100% 50%",
+      "description": "Sharp black sunglasses for a stronger streetwear look."
+    },
+    {
+      "id": 7,
+      "category": "Sneakers",
+      "name": "White Low Sneakers",
+      "price": 10,
+      "oldPrice": null,
+      "badge": "New",
+      "rating": "5.0",
+      "stock": 14,
+      "image": "assets/ai-products.png",
+      "crop": "0% 100%",
+      "description": "White low sneakers for clean outfit finishing."
+    },
+    {
+      "id": 8,
+      "category": "Socks",
+      "name": "Black Sport Socks",
+      "price": 1,
+      "oldPrice": 2,
+      "badge": "-50%",
+      "rating": "4.5",
+      "stock": 80,
+      "image": "assets/ai-products.png",
+      "crop": "50% 100%",
+      "description": "Black socks with simple white athletic detail."
+    },
+    {
+      "id": 9,
+      "category": "Jackets",
+      "name": "Night Bomber Jacket",
+      "price": 10,
+      "oldPrice": 14,
+      "badge": "Deal",
+      "rating": "4.9",
+      "stock": 11,
+      "image": "assets/ai-products.png",
+      "crop": "100% 100%",
+      "description": "Black bomber jacket for evening casual style."
+    }
+  ],
+  "orders": [
+    {
+      "id": 1001,
+      "customer": "Ahmed",
+      "phone": "+252 63 000 1010",
+      "status": "Processing",
+      "total": 20,
+      "items": 3,
+      "date": "2026-07-11"
+    },
+    {
+      "id": 1002,
+      "customer": "Mohamed",
+      "phone": "+252 63 111 2020",
+      "status": "Delivered",
+      "total": 10,
+      "items": 1,
+      "date": "2026-07-10"
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "name": "Admin",
+      "email": "admin@oneten.shop",
+      "role": "Owner"
+    }
+  ],
+  "settings": {
+    "storeName": "ONE TEN",
+    "currency": "$",
+    "phone": "+252 63 000 1010",
+    "city": "Hargaysa"
+  }
+}
