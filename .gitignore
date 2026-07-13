@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+oneten.sqlite3
+supabase_full_export.sql

@@ -1,5 +1,11 @@
 const { useEffect, useState } = React;
 
+const API_BASE_URL = (window.API_BASE_URL || localStorage.getItem("API_BASE_URL") || "").replace(/\/$/, "");
+
+function apiUrl(path) {
+  return path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+}
+
 function adminApi(path, options = {}) {
   const token = localStorage.getItem("adminToken");
   const headers = {
@@ -9,7 +15,7 @@ function adminApi(path, options = {}) {
   };
 
   if (typeof fetch === "function") {
-    return fetch(path, { ...options, headers }).then(async (response) => {
+    return fetch(apiUrl(path), { ...options, headers }).then(async (response) => {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Request failed");
       return data;
@@ -18,7 +24,7 @@ function adminApi(path, options = {}) {
 
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open(options.method || "GET", path, true);
+    request.open(options.method || "GET", apiUrl(path), true);
     Object.entries(headers).forEach(([key, value]) => request.setRequestHeader(key, value));
     request.onload = () => {
       let data = {};

@@ -10,9 +10,25 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
+except ImportError:
+    psycopg = None
+    dict_row = None
+    Jsonb = None
+
+INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+if psycopg is not None:
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.errors.UniqueViolation)
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "oneten.sqlite3")
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL") or ""
+USE_POSTGRES = bool(DATABASE_URL.strip())
 PORT = int(os.environ.get("PORT", "4181"))
+HOST = os.environ.get("HOST", "0.0.0.0")
 SECRET_SETTING_KEYS = {"openai_api_key"}
 
 
@@ -24,7 +40,86 @@ def hash_password(password):
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def db_bool(value):
+    return bool(value) if USE_POSTGRES else (1 if value else 0)
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.lastrowid = None
+
+    def execute(self, query, params=()):
+        translated = translate_query(query)
+        wants_id = self._needs_returning_id(translated)
+        if wants_id and " returning " not in translated.lower():
+            translated = translated.rstrip().rstrip(";") + " RETURNING id"
+        params = adapt_postgres_params(translated, params)
+        self.cursor.execute(translated, params)
+        self.lastrowid = None
+        if wants_id:
+            row = self.cursor.fetchone()
+            self.lastrowid = row["id"] if row else None
+        return self
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    def _needs_returning_id(self, query):
+        lowered = " ".join(query.lower().split())
+        return lowered.startswith("insert into customers ") or lowered.startswith("insert into orders ")
+
+
+class PostgresConnection:
+    def __init__(self):
+        if psycopg is None:
+            raise RuntimeError("psycopg is required for Supabase/Postgres. Install requirements.txt on the host.")
+        self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+    def cursor(self):
+        return PostgresCursor(self.conn.cursor())
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+
+def translate_query(query):
+    translated = query
+    translated = translated.replace("?", "%s")
+    translated = translated.replace("p.active = 1", "p.active = true")
+    translated = translated.replace("active = 1", "active = true")
+    translated = translated.replace("active, created_at)\n                VALUES", "active, created_at)\n                VALUES")
+    translated = translated.replace("INSERT OR REPLACE INTO settings (key, value) VALUES (%s, %s)", "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
+    return translated
+
+
+def adapt_postgres_params(query, params):
+    if not USE_POSTGRES or Jsonb is None or not params:
+        return params
+    lowered = query.lower()
+    if "products" not in lowered or not any(name in lowered for name in ("images", "ai_images", "ai_prompts")):
+        return params
+    adapted = []
+    for value in params:
+        if isinstance(value, str) and value.strip().startswith(("[", "{")):
+            try:
+                adapted.append(Jsonb(json.loads(value)))
+                continue
+            except json.JSONDecodeError:
+                pass
+        adapted.append(value)
+    return tuple(adapted)
+
+
 def db():
+    if USE_POSTGRES:
+        return PostgresConnection()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -156,7 +251,7 @@ def sync_product_visibility(cur, product_id):
     row = cur.execute("SELECT stock FROM products WHERE id = ?", (product_id,)).fetchone()
     if not row:
         return
-    cur.execute("UPDATE products SET active = ? WHERE id = ?", (1 if int(row["stock"] or 0) > 0 else 0, product_id))
+    cur.execute("UPDATE products SET active = ? WHERE id = ?", (db_bool(int(row["stock"] or 0) > 0), product_id))
 
 
 def recalc_order(cur, order_id):
@@ -176,6 +271,17 @@ def recalc_order(cur, order_id):
 
 
 def init_db():
+    if USE_POSTGRES:
+        schema_path = os.path.join(ROOT, "supabase_schema.sql")
+        if not os.path.exists(schema_path):
+            raise RuntimeError("supabase_schema.sql is missing")
+        conn = db()
+        cur = conn.cursor()
+        cur.cursor.execute(open(schema_path, "r", encoding="utf-8").read())
+        conn.commit()
+        conn.close()
+        return
+
     conn = db()
     cur = conn.cursor()
     cur.executescript(
@@ -600,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
                 cur.execute("INSERT INTO sessions (token, user_type, user_id, created_at) VALUES (?, 'customer', ?, ?)", (token, user_id, now()))
                 conn.commit()
                 return self.send_json(201, {"token": token, "user": {"id": user_id, "name": data.get("name", "Customer"), "email": data.get("email", "").lower()}})
-            except sqlite3.IntegrityError:
+            except INTEGRITY_ERRORS:
                 return self.send_json(409, {"error": "Email already exists"})
             finally:
                 conn.close()
@@ -655,7 +761,7 @@ class Handler(BaseHTTPRequestHandler):
                 if product:
                     qty = max(1, int(item.get("qty", 1)))
                     stock = int(product.get("stock") or 0)
-                    if product.get("active") != 1 or stock <= 0:
+                    if product.get("active") not in (1, True) or stock <= 0:
                         conn.close()
                         return self.send_json(409, {"error": f"{product['name']} is out of stock"})
                     if qty > stock:
@@ -690,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
                 cur.execute("INSERT INTO newsletter_subscribers (phone, created_at) VALUES (?, ?)", (phone, now()))
                 conn.commit()
                 return self.send_json(201, {"ok": True})
-            except sqlite3.IntegrityError:
+            except INTEGRITY_ERRORS:
                 return self.send_json(409, {"error": "This phone number is already subscribed"})
             finally:
                 conn.close()
@@ -750,7 +856,7 @@ class Handler(BaseHTTPRequestHandler):
                     data.get("ai_type", "top"),
                     json.dumps(json_list(data.get("ai_images"))),
                     json.dumps(json_list(data.get("ai_prompts"))),
-                    1 if data.get("active", True) else 0,
+                    db_bool(data.get("active", True)),
                     now(),
                 ),
             )
@@ -834,7 +940,7 @@ class Handler(BaseHTTPRequestHandler):
                         data.get("ai_type", "top"),
                         json.dumps(json_list(data.get("ai_images"))),
                         json.dumps(json_list(data.get("ai_prompts"))),
-                        1 if data.get("active", True) else 0,
+                        db_bool(data.get("active", True)),
                         product_id,
                     ),
                 )
@@ -848,7 +954,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self.body()
             cur.execute(
                 "INSERT INTO ads (title, subtitle, button_text, link, image, active, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (data.get("title", "Ad"), data.get("subtitle", ""), data.get("button_text", "Shop Now"), data.get("link", "#/shop"), data.get("image", "assets/ai-hero.png"), 1 if data.get("active", True) else 0, int(data.get("sort_order", 0) or 0), now()),
+                (data.get("title", "Ad"), data.get("subtitle", ""), data.get("button_text", "Shop Now"), data.get("link", "#/shop"), data.get("image", "assets/ai-hero.png"), db_bool(data.get("active", True)), int(data.get("sort_order", 0) or 0), now()),
             )
             conn.commit()
             conn.close()
@@ -860,7 +966,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.body()
                 cur.execute(
                     "UPDATE ads SET title=?, subtitle=?, button_text=?, link=?, image=?, active=?, sort_order=? WHERE id=?",
-                    (data.get("title", "Ad"), data.get("subtitle", ""), data.get("button_text", "Shop Now"), data.get("link", "#/shop"), data.get("image", "assets/ai-hero.png"), 1 if data.get("active", True) else 0, int(data.get("sort_order", 0) or 0), ad_id),
+                    (data.get("title", "Ad"), data.get("subtitle", ""), data.get("button_text", "Shop Now"), data.get("link", "#/shop"), data.get("image", "assets/ai-hero.png"), db_bool(data.get("active", True)), int(data.get("sort_order", 0) or 0), ad_id),
                 )
             elif method == "DELETE":
                 cur.execute("DELETE FROM ads WHERE id = ?", (ad_id,))
@@ -958,6 +1064,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"ONE TEN SQL server running at http://127.0.0.1:{PORT}")
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"ONE TEN server running on {HOST}:{PORT}")
     server.serve_forever()
