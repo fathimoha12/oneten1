@@ -6,11 +6,14 @@ import mimetypes
 import os
 import secrets
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "oneten.sqlite3")
 PORT = int(os.environ.get("PORT", "4181"))
+SECRET_SETTING_KEYS = {"openai_api_key"}
 
 
 def now():
@@ -47,6 +50,101 @@ def product_image_list(data):
         if image not in clean:
             clean.append(image)
     return clean or ["assets/ai-products.png"]
+
+
+def json_list(value):
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, list) else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+
+AI_TYPE_LABELS = {
+    "top": "shirt, t-shirt, jacket, hoodie, or upper-body garment",
+    "pants": "pants, trousers, jeans, shorts, or lower-body garment",
+    "outfit": "full outfit, suit, tracksuit, or complete coordinated look",
+    "shoes": "shoes, sneakers, sandals, or footwear",
+    "watch": "watch, bracelet, ring, or small accessory",
+    "accessory": "cap, belt, bag, sunglasses, or men's accessory",
+}
+
+
+def ai_product_prompts(product, ai_type, has_model_reference=False):
+    name = product.get("name", "ONE TEN product")
+    description = product.get("description", "")
+    product_type = AI_TYPE_LABELS.get(ai_type, AI_TYPE_LABELS["top"])
+    model = (
+        "same stylish young Black male model as the reference portrait, clean shaped beard, "
+        "modern curly afro, confident professional fashion pose"
+    )
+    if has_model_reference:
+        model += ", preserve the uploaded AI model reference identity and grooming style"
+    rules = {
+        "top": "focus on the upper garment; crop around chest and torso; pants are neutral and not advertised",
+        "pants": "focus on lower body first; if torso appears, shirtless athletic upper body with a clean six-pack, no shirt promotion",
+        "outfit": "show full-body styling, complete outfit visible, fashion campaign pose",
+        "shoes": "focus on footwear, low-angle shoe detail, model styling supports the shoes",
+        "watch": "close detail on wrist/hand accessory, luxury men's fashion framing",
+        "accessory": "focus on the exact accessory placement and use, clean men's fashion styling",
+    }
+    focus = rules.get(ai_type, rules["top"])
+    base = f"{name}. {description}. Product type: {product_type}. {focus}."
+    return [
+        f"Studio ecommerce hero on smooth light gray background, ultra clean product advertisement, {model}, {base}",
+        f"Sharp catalog detail shot, product texture and cut in focus, soft gray studio lighting, {model}, {base}",
+        f"Premium lifestyle streetwear scene, red white black ONE TEN color mood, natural confident pose, {model}, {base}",
+        f"Editorial men's fashion campaign, clean shadows, high-end online shop look, {model}, {base}",
+        f"Social ad crop, bold modern composition, product clearly visible, professional retouched finish, {model}, {base}",
+    ]
+
+
+def generate_ai_images(prompts, api_key=""):
+    api_key = (api_key or os.environ.get("OPENAI_API_KEY", "")).strip()
+    if not api_key:
+        return []
+    images = []
+    for prompt in prompts:
+        body = json.dumps({
+            "model": os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+            "prompt": prompt,
+            "size": "1024x1024",
+            "quality": os.environ.get("OPENAI_IMAGE_QUALITY", "low"),
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/images/generations",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        image = (payload.get("data") or [{}])[0]
+        if image.get("b64_json"):
+            images.append(f"data:image/png;base64,{image['b64_json']}")
+        elif image.get("url"):
+            images.append(image["url"])
+    return images
+
+
+def friendly_ai_error(error_text):
+    if not error_text:
+        return ""
+    try:
+        payload = json.loads(error_text)
+        message = ((payload.get("error") or {}).get("message") or "").strip()
+        if message:
+            return message
+    except (TypeError, json.JSONDecodeError):
+        pass
+    return str(error_text).strip()
 
 
 def normalize_phone(phone):
@@ -122,6 +220,9 @@ def init_db():
           images TEXT DEFAULT '[]',
           crop TEXT DEFAULT 'center',
           description TEXT DEFAULT '',
+          ai_type TEXT DEFAULT 'top',
+          ai_images TEXT DEFAULT '[]',
+          ai_prompts TEXT DEFAULT '[]',
           active INTEGER DEFAULT 1,
           created_at TEXT NOT NULL,
           FOREIGN KEY(category_id) REFERENCES categories(id)
@@ -187,6 +288,12 @@ def init_db():
     product_cols = [row["name"] for row in cur.execute("PRAGMA table_info(products)")]
     if "images" not in product_cols:
         cur.execute("ALTER TABLE products ADD COLUMN images TEXT DEFAULT '[]'")
+    if "ai_type" not in product_cols:
+        cur.execute("ALTER TABLE products ADD COLUMN ai_type TEXT DEFAULT 'top'")
+    if "ai_images" not in product_cols:
+        cur.execute("ALTER TABLE products ADD COLUMN ai_images TEXT DEFAULT '[]'")
+    if "ai_prompts" not in product_cols:
+        cur.execute("ALTER TABLE products ADD COLUMN ai_prompts TEXT DEFAULT '[]'")
 
     cur.execute("SELECT COUNT(*) AS c FROM admin_users")
     if cur.fetchone()["c"] == 0:
@@ -251,6 +358,7 @@ def init_db():
         "logo_night": "",
         "footer_logo": "",
         "product_badge_logo": "",
+        "ai_model_reference": "",
         "footer_text": "Men's fashion, clean prices, Hargaysa delivery.",
         "contact_title": "Get In Touch",
         "phone": "+252 63 000 1010",
@@ -317,14 +425,14 @@ def public_payload():
         )
     )
     for product in products:
-        try:
-            product["images"] = json.loads(product.get("images") or "[]")
-        except json.JSONDecodeError:
-            product["images"] = []
-        product["images"] = product_image_list(product)
+        product["ai_images"] = json_list(product.get("ai_images"))
+        product["ai_prompts"] = json_list(product.get("ai_prompts"))
+        product["images"] = product["ai_images"] or product_image_list(product)
         product["image"] = product["images"][0]
     ads = rows(cur.execute("SELECT * FROM ads WHERE active = 1 ORDER BY sort_order, id"))
-    settings = {row["key"]: row["value"] for row in cur.execute("SELECT key, value FROM settings")}
+    raw_settings = {row["key"]: row["value"] for row in cur.execute("SELECT key, value FROM settings")}
+    settings = {key: value for key, value in raw_settings.items() if key not in SECRET_SETTING_KEYS}
+    settings["openai_api_configured"] = "1" if (os.environ.get("OPENAI_API_KEY", "").strip() or raw_settings.get("openai_api_key", "").strip()) else ""
     for key in ("information_links", "department_links"):
         try:
             settings[key] = json.loads(settings.get(key, "[]"))
@@ -436,11 +544,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
             for product in admin_products:
-                try:
-                    product["images"] = json.loads(product.get("images") or "[]")
-                except json.JSONDecodeError:
-                    product["images"] = []
-                product["images"] = product_image_list(product)
+                product["ai_images"] = json_list(product.get("ai_images"))
+                product["ai_prompts"] = json_list(product.get("ai_prompts"))
+                product["images"] = product["ai_images"] or product_image_list(product)
                 product["image"] = product["images"][0]
             payload["products"] = admin_products
             orders = rows(
@@ -626,8 +732,8 @@ class Handler(BaseHTTPRequestHandler):
             cur.execute(
                 """
                 INSERT INTO products
-                (category_id, name, price, old_price, badge, rating, stock, image, images, crop, description, active, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (category_id, name, price, old_price, badge, rating, stock, image, images, crop, description, ai_type, ai_images, ai_prompts, active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(data.get("category_id") or 1),
@@ -641,6 +747,9 @@ class Handler(BaseHTTPRequestHandler):
                     json.dumps(product_images),
                     data.get("crop", "center"),
                     data.get("description", ""),
+                    data.get("ai_type", "top"),
+                    json.dumps(json_list(data.get("ai_images"))),
+                    json.dumps(json_list(data.get("ai_prompts"))),
                     1 if data.get("active", True) else 0,
                     now(),
                 ),
@@ -648,6 +757,56 @@ class Handler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
             return self.send_json(201, {"ok": True})
+
+        if path.startswith("/api/admin/products/") and path.endswith("/ai-pack") and method == "POST":
+            product_id = int(path.split("/")[-2])
+            data = self.body()
+            product = cur.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+            if not product:
+                conn.close()
+                return self.send_json(404, {"error": "Product not found"})
+            product = dict(product)
+            ai_type = data.get("ai_type") or product.get("ai_type") or "top"
+            model_reference = cur.execute("SELECT value FROM settings WHERE key = 'ai_model_reference'").fetchone()
+            prompts = ai_product_prompts(product, ai_type, bool(model_reference and model_reference["value"]))
+            stored_key = cur.execute("SELECT value FROM settings WHERE key = 'openai_api_key'").fetchone()
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip() or (stored_key["value"].strip() if stored_key and stored_key["value"] else "")
+            generated_images = []
+            ai_error = ""
+            try:
+                generated_images = generate_ai_images(prompts, api_key)
+            except urllib.error.HTTPError as exc:
+                try:
+                    ai_error = exc.read().decode("utf-8")
+                except Exception:
+                    ai_error = str(exc)
+            except (urllib.error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                ai_error = str(exc)
+            images_to_store = generated_images or json_list(product.get("ai_images"))
+            cur.execute(
+                "UPDATE products SET ai_type = ?, ai_prompts = ?, ai_images = ? WHERE id = ?",
+                (ai_type, json.dumps(prompts), json.dumps(images_to_store), product_id),
+            )
+            conn.commit()
+            conn.close()
+            friendly_error = friendly_ai_error(ai_error)
+            if generated_images:
+                ai_message = "AI images generated"
+            elif friendly_error:
+                ai_message = f"AI images were not generated: {friendly_error}"
+            elif not api_key:
+                ai_message = "OpenAI API key is missing"
+            else:
+                ai_message = "AI prompts saved, but no images were returned"
+            return self.send_json(200, {
+                "ok": True,
+                "ai_type": ai_type,
+                "prompts": prompts,
+                "images": images_to_store,
+                "generated": len(generated_images),
+                "message": ai_message,
+                "error": friendly_error,
+            })
 
         if path.startswith("/api/admin/products/"):
             product_id = int(path.rsplit("/", 1)[1])
@@ -657,7 +816,7 @@ class Handler(BaseHTTPRequestHandler):
                 cur.execute(
                     """
                     UPDATE products
-                    SET category_id=?, name=?, price=?, old_price=?, badge=?, rating=?, stock=?, image=?, images=?, crop=?, description=?, active=?
+                    SET category_id=?, name=?, price=?, old_price=?, badge=?, rating=?, stock=?, image=?, images=?, crop=?, description=?, ai_type=?, ai_images=?, ai_prompts=?, active=?
                     WHERE id=?
                     """,
                     (
@@ -672,6 +831,9 @@ class Handler(BaseHTTPRequestHandler):
                         json.dumps(product_images),
                         data.get("crop", "center"),
                         data.get("description", ""),
+                        data.get("ai_type", "top"),
+                        json.dumps(json_list(data.get("ai_images"))),
+                        json.dumps(json_list(data.get("ai_prompts"))),
                         1 if data.get("active", True) else 0,
                         product_id,
                     ),

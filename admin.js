@@ -82,8 +82,20 @@ const emptyProduct = {
   images: [],
   crop: "center",
   description: "",
+  ai_type: "top",
+  ai_images: [],
+  ai_prompts: [],
   active: true,
 };
+
+const aiProductTypes = [
+  ["top", "Shirt / upper garment"],
+  ["pants", "Pants / lower garment"],
+  ["outfit", "Full outfit / suit / tracksuit"],
+  ["shoes", "Shoes / footwear"],
+  ["watch", "Watch / jewelry"],
+  ["accessory", "Cap / bag / accessory"],
+];
 
 const emptyCategory = { name: "", description: "", price_mode: "range", sort_order: "0" };
 const emptyAd = {
@@ -101,7 +113,7 @@ function AdminApp() {
   const [username, setUsername] = useState("onetenadmin");
   const [password, setPassword] = useState("oneten");
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState("products");
+  const [tab, setTab] = useState("dashboard");
   const [data, setData] = useState({ products: [], categories: [], ads: [], orders: [], subscribers: [], dashboard: {}, settings: {} });
 
   useEffect(() => {
@@ -157,7 +169,7 @@ function AdminApp() {
   return React.createElement("div", { className: "admin-shell" },
     React.createElement("aside", { className: "admin-sidebar" },
       React.createElement("img", { src: data.settings.logo_night || data.settings.logo_image || "assets/logo-white.png", alt: "ONE TEN" }),
-      [["products", "Products"], ["categories", "Categories"], ["ads", "Landing Ads"], ["about", "About Us"], ["settings", "Logo/Contact/Footer"], ["subscribers", "Subscribers"], ["orders", "Orders"]].map(([id, label]) =>
+      [["dashboard", "Dashboard"], ["products", "Products"], ["categories", "Categories"], ["ads", "Landing Ads"], ["about", "About Us"], ["settings", "Logo/Contact/Footer"], ["subscribers", "Subscribers"], ["orders", "Orders"]].map(([id, label]) =>
         React.createElement("button", { className: tab === id ? "active" : "", key: id, onClick: () => setTab(id), type: "button" }, label)
       ),
       React.createElement("a", { href: "/" }, "Public Website"),
@@ -165,7 +177,8 @@ function AdminApp() {
     ),
     React.createElement("main", { className: "admin-main" },
       React.createElement("div", { className: "admin-top" },
-        React.createElement("div", null, React.createElement("p", { className: "eyebrow" }, "ONE TEN SQL Admin"), React.createElement("h1", null, "Dashboard")),
+        React.createElement("div", null, React.createElement("p", { className: "eyebrow" }, "ONE TEN SQL Admin"), React.createElement("h1", null, tab === "dashboard" ? "Good Morning" : tab.replace("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()))),
+        React.createElement("div", { className: "admin-top-search" }, React.createElement("input", { placeholder: "Search anything" })),
         React.createElement("button", { onClick: refresh, type: "button" }, "Refresh")
       ),
       React.createElement("div", { className: "admin-stats" },
@@ -178,6 +191,7 @@ function AdminApp() {
         React.createElement(Stat, { label: "Low Stock", value: data.dashboard.lowStock || 0 })
       ),
       message && React.createElement("div", { className: "admin-message" }, message),
+      tab === "dashboard" && React.createElement(DashboardHome, { data, setTab }),
       tab === "products" && React.createElement(ProductsAdmin, { data, refresh, setMessage }),
       tab === "categories" && React.createElement(CategoriesAdmin, { data, refresh, setMessage }),
       tab === "ads" && React.createElement(AdsAdmin, { data, refresh, setMessage }),
@@ -193,9 +207,64 @@ function Stat({ label, value }) {
   return React.createElement("div", { className: "stat" }, React.createElement("span", null, label), React.createElement("strong", null, value));
 }
 
+function DashboardHome({ data, setTab }) {
+  const products = data.products || [];
+  const orders = data.orders || [];
+  const activeCount = products.filter((product) => Number(product.active) === 1 && Number(product.stock || 0) > 0).length;
+  const inactiveCount = products.length - activeCount;
+  const lowStock = products.filter((product) => Number(product.stock || 0) > 0 && Number(product.stock || 0) <= 3).length;
+  const recentOrders = orders.slice(0, 5);
+  const activePercent = products.length ? Math.round((activeCount / products.length) * 100) : 0;
+
+  return React.createElement("section", { className: "admin-dashboard" },
+    React.createElement("div", { className: "dashboard-hero-card" },
+      React.createElement("div", null,
+        React.createElement("span", null, "ONE TEN Control"),
+        React.createElement("h2", null, "Manage products, orders, ads and AI fashion assets from one clean dashboard."),
+        React.createElement("p", null, `${activeCount} public products, ${inactiveCount} hidden products, ${lowStock} low-stock alerts.`)
+      ),
+      React.createElement("button", { onClick: () => setTab("products"), type: "button" }, "Add Product")
+    ),
+    React.createElement("div", { className: "dashboard-panels" },
+      React.createElement("article", { className: "dashboard-panel performance-card" },
+        React.createElement("div", { className: "panel-head" }, React.createElement("strong", null, "Product Performance"), React.createElement("span", null, `${activePercent}% active`)),
+        React.createElement("div", { className: "progress-ring", style: { "--value": `${activePercent}%` } }, React.createElement("strong", null, `${activePercent}%`)),
+        React.createElement("div", { className: "mini-bars" },
+          React.createElement("span", { style: { "--h": "42%" } }),
+          React.createElement("span", { style: { "--h": "68%" } }),
+          React.createElement("span", { style: { "--h": "54%" } }),
+          React.createElement("span", { style: { "--h": "82%" } }),
+          React.createElement("span", { style: { "--h": "61%" } })
+        )
+      ),
+      React.createElement("article", { className: "dashboard-panel" },
+        React.createElement("div", { className: "panel-head" }, React.createElement("strong", null, "Quick Actions"), React.createElement("span", null, "Admin tools")),
+        React.createElement("div", { className: "quick-actions" },
+          [["products", "Products"], ["orders", "Orders"], ["ads", "Landing Ads"], ["settings", "Settings"]].map(([id, label]) =>
+            React.createElement("button", { key: id, onClick: () => setTab(id), type: "button" }, label)
+          )
+        )
+      ),
+      React.createElement("article", { className: "dashboard-panel" },
+        React.createElement("div", { className: "panel-head" }, React.createElement("strong", null, "Recent Orders"), React.createElement("span", null, `${orders.length} total`)),
+        React.createElement("div", { className: "recent-list" },
+          recentOrders.length ? recentOrders.map((order) => React.createElement("div", { key: order.id },
+            React.createElement("span", null, `#${order.id} ${order.customer_name || "Customer"}`),
+            React.createElement("strong", null, `$${Number(order.total || 0).toFixed(2)}`)
+          )) : React.createElement("p", null, "No orders yet")
+        )
+      )
+    )
+  );
+}
+
 function ProductsAdmin({ data, refresh, setMessage }) {
   const [form, setForm] = useState(emptyProduct);
   const [editing, setEditing] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [productQuery, setProductQuery] = useState("");
+  const [productView, setProductView] = useState("active");
+  const [formOpen, setFormOpen] = useState(false);
 
   function save(event) {
     event.preventDefault();
@@ -207,6 +276,7 @@ function ProductsAdmin({ data, refresh, setMessage }) {
         setMessage(editing ? "Product updated" : "Product added");
         setEditing(null);
         setForm(emptyProduct);
+        setFormOpen(false);
         refresh();
       })
       .catch((error) => setMessage(error.message));
@@ -214,7 +284,14 @@ function ProductsAdmin({ data, refresh, setMessage }) {
 
   function edit(product) {
     setEditing(product.id);
-    setForm({ ...emptyProduct, ...product, image: getProductImages(product)[0], images: getProductImages(product), old_price: product.old_price || "", category_id: product.category_id || "" });
+    setForm({ ...emptyProduct, ...product, image: getProductImages(product)[0], images: getProductImages(product), old_price: product.old_price || "", category_id: product.category_id || "", ai_images: Array.isArray(product.ai_images) ? product.ai_images : [], ai_prompts: Array.isArray(product.ai_prompts) ? product.ai_prompts : [], ai_type: product.ai_type || "top" });
+    setFormOpen(true);
+  }
+
+  function startAddProduct() {
+    setEditing(null);
+    setForm(emptyProduct);
+    setFormOpen(true);
   }
 
   function remove(id) {
@@ -235,15 +312,41 @@ function ProductsAdmin({ data, refresh, setMessage }) {
 
   function removeImage(index) {
     setForm((current) => {
-      const images = getProductImages(current).filter((_, imageIndex) => imageIndex !== index);
+      const images = getProductImages(current)
+        .filter((image) => image !== "assets/ai-products.png")
+        .filter((_, imageIndex) => imageIndex !== index);
       const clean = images.length ? images : ["assets/ai-products.png"];
       return { ...current, image: clean[0], images: clean };
     });
   }
 
-  const previewImages = getProductImages(form);
+  function generateAiPack() {
+    if (!editing) {
+      setMessage("Save the product first, then generate the AI pack");
+      return;
+    }
+    setAiBusy(true);
+    adminApi(`/api/admin/products/${editing}/ai-pack`, { method: "POST", body: JSON.stringify({ ai_type: form.ai_type }) })
+      .then((payload) => {
+        setMessage(payload.message || "AI pack updated");
+        setForm((current) => ({ ...current, ai_prompts: payload.prompts || [], ai_images: payload.images || current.ai_images || [] }));
+        refresh();
+      })
+      .catch((error) => setMessage(error.message))
+      .finally(() => setAiBusy(false));
+  }
+
+  const previewImages = getProductImages(form).filter((image) => image !== "assets/ai-products.png");
   const publicProducts = (data.products || []).filter((product) => Number(product.active) === 1 && Number(product.stock || 0) > 0);
   const inactiveProducts = (data.products || []).filter((product) => Number(product.active) !== 1 || Number(product.stock || 0) <= 0);
+  const currentProducts = productView === "active" ? publicProducts : inactiveProducts;
+  const normalizedQuery = productQuery.trim().toLowerCase();
+  const visibleProducts = currentProducts.filter((product) => {
+    if (!normalizedQuery) return true;
+    return [product.name, product.category, product.description, product.badge, product.ai_type]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+  });
 
   function ProductRow(product) {
     const isPublic = Number(product.active) === 1 && Number(product.stock || 0) > 0;
@@ -252,16 +355,22 @@ function ProductsAdmin({ data, refresh, setMessage }) {
       React.createElement("div", null,
         React.createElement("strong", null, product.name),
         React.createElement("span", null, `${product.category} / $${product.price} / Stock ${product.stock} / ${getProductImages(product).length} images`),
-        React.createElement("em", { className: isPublic ? "product-state public" : "product-state inactive" }, isPublic ? "Public / Active" : Number(product.stock || 0) <= 0 ? "Inactive / Stock finished" : "Inactive / Hidden")
+        React.createElement("em", { className: isPublic ? "product-state public" : "product-state inactive" }, isPublic ? "Public / Active" : Number(product.stock || 0) <= 0 ? "Inactive / Stock finished" : "Inactive / Hidden"),
+        (product.ai_prompts || []).length > 0 && React.createElement("em", { className: "product-state ai-ready" }, `AI ${product.ai_type || "style"} ready`)
       ),
       React.createElement("button", { onClick: () => edit(product), type: "button" }, "Edit"),
       React.createElement("button", { onClick: () => remove(product.id), type: "button" }, "Delete")
     );
   }
 
-  return React.createElement("section", { className: "admin-grid" },
-    React.createElement("form", { className: "admin-form", onSubmit: save },
-      React.createElement("h2", null, editing ? "Edit Product" : "Add Product"),
+  return React.createElement("section", { className: `admin-grid products-workspace ${formOpen ? "form-open" : ""}` },
+    React.createElement("button", { className: "product-form-fab", onClick: startAddProduct, type: "button" }, "+"),
+    formOpen && React.createElement("button", { className: "product-form-backdrop", onClick: () => setFormOpen(false), type: "button", "aria-label": "Close product form" }),
+    React.createElement("form", { className: `admin-form product-form-panel ${formOpen ? "open" : ""}`, onSubmit: save },
+      React.createElement("div", { className: "product-form-head" },
+        React.createElement("div", null, React.createElement("span", null, editing ? "Editing product" : "New product"), React.createElement("h2", null, editing ? "Edit Product" : "Add Product")),
+        React.createElement("button", { className: "panel-close", onClick: () => setFormOpen(false), type: "button" }, "Close")
+      ),
       React.createElement("input", { required: true, value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }), placeholder: "Product name" }),
       React.createElement("select", { value: form.category_id, onChange: (event) => setForm({ ...form, category_id: event.target.value }) }, React.createElement("option", { value: "" }, "Choose category"), data.categories.map((cat) => React.createElement("option", { key: cat.id, value: cat.id }, cat.name))),
       React.createElement("div", { className: "two-col" }, React.createElement("input", { value: form.price, onChange: (event) => setForm({ ...form, price: event.target.value }), placeholder: "Price 1-10" }), React.createElement("input", { value: form.old_price || "", onChange: (event) => setForm({ ...form, old_price: event.target.value }), placeholder: "Old price" })),
@@ -269,21 +378,35 @@ function ProductsAdmin({ data, refresh, setMessage }) {
       React.createElement("label", { className: "file-picker" }, "Choose product images",
         React.createElement("input", { accept: "image/*", multiple: true, onChange: chooseFile, type: "file" })
       ),
-      React.createElement("div", { className: "admin-image-preview" }, previewImages.map((image, index) => React.createElement("button", { key: `${image}-${index}`, onClick: () => removeImage(index), title: "Remove image", type: "button" }, React.createElement("img", { src: image, alt: `Product image ${index + 1}` }), React.createElement("span", null, index === 0 ? "Main" : "Alt")))),
-      React.createElement("input", { value: form.image, onChange: (event) => setForm({ ...form, image: event.target.value, images: getProductImages({ ...form, image: event.target.value }) }), placeholder: "Main image path or online URL" }),
-      React.createElement("input", { value: form.crop || "", onChange: (event) => setForm({ ...form, crop: event.target.value }), placeholder: "Image crop" }),
+      previewImages.length > 0 && React.createElement("div", { className: "admin-image-preview" }, previewImages.map((image, index) => React.createElement("button", { key: `${image}-${index}`, onClick: () => removeImage(index), title: "Remove image", type: "button" }, React.createElement("img", { src: image, alt: `Product image ${index + 1}` }), React.createElement("span", null, index === 0 ? "Main" : "Alt")))),
       React.createElement("textarea", { value: form.description || "", onChange: (event) => setForm({ ...form, description: event.target.value }), placeholder: "Description" }),
+      React.createElement("div", { className: "ai-product-studio" },
+        React.createElement("div", { className: "ai-studio-head" },
+          React.createElement("div", null, React.createElement("strong", null, "AI Product Studio"), React.createElement("span", null, "Choose how AI should advertise this product")),
+          React.createElement("button", { className: !editing ? "needs-save" : "", disabled: aiBusy, onClick: generateAiPack, type: "button" }, aiBusy ? "Generating..." : editing ? "Generate AI Pack" : "Save Product First")
+        ),
+        React.createElement("select", { value: form.ai_type || "top", onChange: (event) => setForm({ ...form, ai_type: event.target.value }) }, aiProductTypes.map(([value, label]) => React.createElement("option", { key: value, value }, label))),
+        React.createElement("p", { className: "ai-note" }, "AI pack creates 5 professional concepts: clean gray studio hero, product close-up, lifestyle, editorial, and social ad crop."),
+        (form.ai_images || []).length > 0 && React.createElement("div", { className: "admin-image-preview ai-pack-preview" }, form.ai_images.map((image, index) => React.createElement("button", { key: `${image}-${index}`, type: "button" }, React.createElement("img", { src: image, alt: `AI image ${index + 1}` }), React.createElement("span", null, `AI ${index + 1}`)))),
+        (form.ai_prompts || []).length > 0 && React.createElement("details", { className: "ai-prompts" }, React.createElement("summary", null, "View AI prompts"), React.createElement("ol", null, form.ai_prompts.map((prompt, index) => React.createElement("li", { key: index }, prompt))))
+      ),
       React.createElement("button", { type: "submit" }, editing ? "Save Product" : "Add Product")
     ),
-    React.createElement("div", { className: "admin-table" },
-      React.createElement("h2", null, "Products"),
-      React.createElement("div", { className: "product-admin-section" },
-        React.createElement("div", { className: "product-admin-head" }, React.createElement("strong", null, "Public products"), React.createElement("span", null, `${publicProducts.length} active`)),
-        publicProducts.length ? publicProducts.map(ProductRow) : React.createElement("div", { className: "empty-state compact" }, React.createElement("h2", null, "No public products"))
+    React.createElement("div", { className: "admin-table product-board" },
+      React.createElement("div", { className: "product-board-head" },
+        React.createElement("div", null, React.createElement("span", null, "Inventory"), React.createElement("h2", null, productView === "active" ? "Active Products" : "Inactive Products")),
+        React.createElement("button", { onClick: startAddProduct, type: "button" }, "Add Product")
       ),
-      React.createElement("div", { className: "product-admin-section inactive" },
-        React.createElement("div", { className: "product-admin-head" }, React.createElement("strong", null, "Inactive / stock finished"), React.createElement("span", null, `${inactiveProducts.length} hidden`)),
-        inactiveProducts.length ? inactiveProducts.map(ProductRow) : React.createElement("div", { className: "empty-state compact" }, React.createElement("h2", null, "No inactive products"))
+      React.createElement("div", { className: "product-admin-toolbar" },
+        React.createElement("div", { className: "product-search-box" }, React.createElement("input", { value: productQuery, onChange: (event) => setProductQuery(event.target.value), placeholder: "Search products, category, stock..." })),
+        React.createElement("div", { className: "product-status-tabs" },
+          React.createElement("button", { className: productView === "active" ? "active" : "", onClick: () => setProductView("active"), type: "button" }, `Active ${publicProducts.length}`),
+          React.createElement("button", { className: productView === "inactive" ? "active" : "", onClick: () => setProductView("inactive"), type: "button" }, `Inactive ${inactiveProducts.length}`)
+        )
+      ),
+      React.createElement("div", { className: `product-admin-section ${productView === "inactive" ? "inactive" : ""}` },
+        React.createElement("div", { className: "product-admin-head" }, React.createElement("strong", null, productView === "active" ? "Public / active page" : "Inactive / hidden page"), React.createElement("span", null, `${visibleProducts.length} showing`)),
+        visibleProducts.length ? visibleProducts.map(ProductRow) : React.createElement("div", { className: "empty-state compact" }, React.createElement("h2", null, productQuery ? "No matching products" : productView === "active" ? "No active products" : "No inactive products"))
       )
     )
   );
@@ -443,6 +566,8 @@ function SettingsAdmin({ data, refresh, setMessage }) {
     logo_night: settings.logo_night || "",
     footer_logo: settings.footer_logo || "",
     product_badge_logo: settings.product_badge_logo || "",
+    ai_model_reference: settings.ai_model_reference || "",
+    openai_api_key: "",
     footer_text: settings.footer_text || "",
     contact_title: settings.contact_title || "Get In Touch",
     phone: settings.phone || "",
@@ -460,6 +585,8 @@ function SettingsAdmin({ data, refresh, setMessage }) {
       logo_night: settings.logo_night || "",
       footer_logo: settings.footer_logo || "",
       product_badge_logo: settings.product_badge_logo || "",
+      ai_model_reference: settings.ai_model_reference || "",
+      openai_api_key: "",
       footer_text: settings.footer_text || "",
       contact_title: settings.contact_title || "Get In Touch",
       phone: settings.phone || "",
@@ -503,6 +630,7 @@ function SettingsAdmin({ data, refresh, setMessage }) {
       logo_night: form.logo_night,
       footer_logo: form.footer_logo,
       product_badge_logo: form.product_badge_logo,
+      ai_model_reference: form.ai_model_reference,
       footer_text: form.footer_text,
       contact_title: form.contact_title,
       phone: form.phone,
@@ -512,6 +640,7 @@ function SettingsAdmin({ data, refresh, setMessage }) {
       information_links: form.information_links.filter((link) => link.label.trim() && link.href.trim()),
       department_links: form.department_links.filter((link) => link.label.trim() && link.href.trim()),
     };
+    if (form.openai_api_key.trim()) body.openai_api_key = form.openai_api_key.trim();
     adminApi("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) })
       .then(() => {
         setMessage("Logo, contact, hotline, and footer updated");
@@ -551,6 +680,12 @@ function SettingsAdmin({ data, refresh, setMessage }) {
       React.createElement("div", { className: "two-col" },
         React.createElement(LogoField, { field: "footer_logo", label: "Choose footer logo", placeholder: "Footer logo path or online URL" }),
         React.createElement(LogoField, { field: "product_badge_logo", label: "Choose product badge logo", placeholder: "Small product badge logo path or URL" })
+      ),
+      React.createElement(LogoField, { field: "ai_model_reference", label: "Choose AI model reference", placeholder: "Upload the male model reference image for AI campaigns" }),
+      React.createElement("div", { className: "ai-key-box" },
+        React.createElement("strong", null, "OpenAI Image API"),
+        React.createElement("span", null, settings.openai_api_configured ? "API key is configured. Add a new key only if you want to replace it." : "Add your API key to turn AI Pack generation into real images."),
+        React.createElement("input", { value: form.openai_api_key, onChange: (event) => setForm({ ...form, openai_api_key: event.target.value }), placeholder: "OpenAI API key, hidden after save", type: "password" })
       ),
       React.createElement("input", { value: form.logo_image, onChange: (event) => setForm({ ...form, logo_image: event.target.value }), placeholder: "Old/general logo fallback path" }),
       React.createElement("input", { value: form.contact_title, onChange: (event) => setForm({ ...form, contact_title: event.target.value }), placeholder: "Contact title" }),
