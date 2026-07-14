@@ -443,7 +443,7 @@ function ProductCard({ product, settings = {}, view = "grid", addToCart, navigat
       React.createElement("a", { className: "product-card-link", href: `#/product/${product.id}`, "aria-label": `View ${product.name}` }),
       product.badge && React.createElement("span", { className: "badge" }, product.badge),
       settings.product_badge_logo && React.createElement("span", { className: "product-badge-logo" }, React.createElement("img", { src: settings.product_badge_logo, alt: "ONE TEN badge" })),
-      React.createElement("img", { src: mainImage, alt: product.name, style: { objectPosition: product.crop || "center" } }),
+      React.createElement("img", { src: mainImage, alt: product.name, decoding: "async", loading: "lazy", style: { objectPosition: product.crop || "center" } }),
       React.createElement("div", { className: "hover-actions" }, React.createElement("button", { onClick: (event) => { event.stopPropagation(); navigate("product/" + product.id); }, type: "button" }, "View"), React.createElement("button", { onClick: (event) => { event.stopPropagation(); needsSize ? navigate("product/" + product.id) : addToCart(product); }, type: "button" }, needsSize ? "Choose Size" : "Add to Cart"))
     ),
     React.createElement("div", { className: "product-content" }, React.createElement("span", { className: "category" }, product.category), React.createElement("h3", null, React.createElement("a", { href: `#/product/${product.id}`, onClick: (event) => event.stopPropagation() }, product.name)), React.createElement("div", { className: "rating" }, React.createElement("span", null, "Rating"), React.createElement("strong", null, product.rating || "4.8"), React.createElement("em", null, "Review(s)")), React.createElement("div", { className: "price" }, React.createElement("strong", null, `$${Number(product.price).toFixed(2)}`), product.old_price && React.createElement("del", null, `$${Number(product.old_price).toFixed(2)}`)))
@@ -451,21 +451,36 @@ function ProductCard({ product, settings = {}, view = "grid", addToCart, navigat
 }
 
 function ProductPage({ product, products = [], settings = {}, addToCart, navigate }) {
-  const images = product ? getProductImages(product) : [assets.products];
+  const [detailProduct, setDetailProduct] = useState(null);
+  useEffect(() => {
+    setDetailProduct(null);
+    if (!product) return undefined;
+    let cancelled = false;
+    api(`/api/public/products/${product.id}`)
+      .then((payload) => {
+        if (!cancelled && payload.product) setDetailProduct({ ...product, ...payload.product });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [product && product.id]);
+  const currentProduct = detailProduct || product;
+  const images = currentProduct ? getProductImages(currentProduct) : [assets.products];
   const [activeImage, setActiveImage] = useState(images[0]);
   const [selectedSize, setSelectedSize] = useState("");
   const [qty, setQty] = useState(1);
   const [message, setMessage] = useState("");
-  useEffect(() => setActiveImage(images[0]), [product && product.id, images[0]]);
+  useEffect(() => setActiveImage(images[0]), [currentProduct && currentProduct.id, images[0]]);
   useEffect(() => {
-    const sizes = getProductSizes(product);
+    const sizes = getProductSizes(currentProduct);
     setSelectedSize(sizes[0] ? sizes[0].size : "");
     setQty(1);
     setMessage("");
-  }, [product && product.id]);
-  if (!product) return React.createElement(NotFoundPage, { navigate });
-  const availableSizes = getProductSizes(product);
-  const selectedStock = getSizeStock(product, selectedSize);
+  }, [currentProduct && currentProduct.id]);
+  if (!currentProduct) return React.createElement(NotFoundPage, { navigate });
+  const availableSizes = getProductSizes(currentProduct);
+  const selectedStock = getSizeStock(currentProduct, selectedSize);
   function addSelectedToCart() {
     if (availableSizes.length && !selectedSize) {
       setMessage("Macmiil, size-kan waxba kama yaalaan. Fadlan dooro size stock leh.");
@@ -475,23 +490,23 @@ function ProductPage({ product, products = [], settings = {}, addToCart, navigat
       setMessage(`Kaliya ${selectedStock} ayaa ka yaalla size ${selectedSize || "kan"}.`);
       return;
     }
-    if (addToCart(product, selectedSize, qty)) setMessage("");
+    if (addToCart(currentProduct, selectedSize, qty)) setMessage("");
   }
   const relatedByCategory = products
-    .filter((item) => String(item.id) !== String(product.id) && (String(item.category_id) === String(product.category_id) || item.category === product.category))
+    .filter((item) => String(item.id) !== String(currentProduct.id) && (String(item.category_id) === String(currentProduct.category_id) || item.category === currentProduct.category))
     .slice(0, 4);
-  const related = relatedByCategory.length ? relatedByCategory : products.filter((item) => String(item.id) !== String(product.id)).slice(0, 4);
-  return React.createElement(React.Fragment, null, React.createElement(Breadcrumb, { title: product.name, trail: `Home / Shop / ${product.name}` }), React.createElement("main", { className: "detail-page" }, React.createElement("div", { className: "detail-media" },
-    React.createElement("img", { src: activeImage || images[0], alt: product.name, style: { objectPosition: product.crop || "center" } }),
-    images.length > 1 && React.createElement("div", { className: "detail-thumbs" }, images.map((image, index) => React.createElement("button", { className: image === activeImage ? "active" : "", key: `${image}-${index}`, onClick: () => setActiveImage(image), type: "button" }, React.createElement("img", { src: image, alt: `${product.name} ${index + 1}` }))))
-  ), React.createElement("div", { className: "detail-info" }, React.createElement("p", { className: "eyebrow" }, product.category), React.createElement("h2", null, product.name), React.createElement("p", null, product.description), React.createElement("div", { className: "price detail-price" }, React.createElement("strong", null, `$${Number(product.price).toFixed(2)}`), product.old_price && React.createElement("del", null, `$${Number(product.old_price).toFixed(2)}`)),
+  const related = relatedByCategory.length ? relatedByCategory : products.filter((item) => String(item.id) !== String(currentProduct.id)).slice(0, 4);
+  return React.createElement(React.Fragment, null, React.createElement(Breadcrumb, { title: currentProduct.name, trail: `Home / Shop / ${currentProduct.name}` }), React.createElement("main", { className: "detail-page" }, React.createElement("div", { className: "detail-media" },
+    React.createElement("img", { src: activeImage || images[0], alt: currentProduct.name, decoding: "async", loading: "eager", style: { objectPosition: currentProduct.crop || "center" } }),
+    images.length > 1 && React.createElement("div", { className: "detail-thumbs" }, images.map((image, index) => React.createElement("button", { className: image === activeImage ? "active" : "", key: `${image}-${index}`, onClick: () => setActiveImage(image), type: "button" }, React.createElement("img", { src: image, alt: `${currentProduct.name} ${index + 1}`, decoding: "async", loading: "lazy" }))))
+  ), React.createElement("div", { className: "detail-info" }, React.createElement("p", { className: "eyebrow" }, currentProduct.category), React.createElement("h2", null, currentProduct.name), React.createElement("p", null, currentProduct.description), React.createElement("div", { className: "price detail-price" }, React.createElement("strong", null, `$${Number(currentProduct.price).toFixed(2)}`), currentProduct.old_price && React.createElement("del", null, `$${Number(currentProduct.old_price).toFixed(2)}`)),
     availableSizes.length > 0 && React.createElement("div", { className: "size-picker" },
       React.createElement("div", { className: "size-picker-head" }, React.createElement("strong", null, "Choose Size"), React.createElement("span", null, selectedSize ? `${selectedStock} available` : "Select a size")),
       React.createElement("div", { className: "size-options" }, availableSizes.map((item) => React.createElement("button", { className: selectedSize === item.size ? "active" : "", key: item.size, onClick: () => { setSelectedSize(item.size); setQty(1); setMessage(""); }, type: "button" }, React.createElement("span", null, item.size), React.createElement("em", null, item.stock))))
     ),
     React.createElement("div", { className: "detail-buy-row" },
-      React.createElement("label", null, React.createElement("span", null, "Qty"), React.createElement("input", { max: selectedStock || product.stock || 1, min: "1", onChange: (event) => setQty(Math.max(1, Number(event.target.value) || 1)), type: "number", value: qty })),
-      React.createElement("p", null, `Stock: ${availableSizes.length ? selectedStock : product.stock}`)
+      React.createElement("label", null, React.createElement("span", null, "Qty"), React.createElement("input", { max: selectedStock || currentProduct.stock || 1, min: "1", onChange: (event) => setQty(Math.max(1, Number(event.target.value) || 1)), type: "number", value: qty })),
+      React.createElement("p", null, `Stock: ${availableSizes.length ? selectedStock : currentProduct.stock}`)
     ),
     message && React.createElement("p", { className: "stock-message" }, message),
     React.createElement("button", { className: "btn primary", disabled: selectedStock <= 0, onClick: addSelectedToCart, type: "button" }, selectedStock <= 0 ? "Out of Stock" : "Add to Cart")

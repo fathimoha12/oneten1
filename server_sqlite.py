@@ -1,6 +1,7 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 import hashlib
+import gzip
 import json
 import mimetypes
 import os
@@ -213,6 +214,38 @@ def product_total_stock(size_rows, fallback=0):
 
 def public_size_rows(size_rows):
     return [item for item in size_rows if int(item.get("stock") or 0) > 0]
+
+
+def public_product_record(product, full=False):
+    product = dict(product)
+    sizes = public_size_rows(product_sizes(product))
+    if product_sizes(product) and not sizes:
+        return None
+    gallery = json_list(product.get("ai_images")) or product_image_list(product)
+    image = gallery[0] if gallery else "assets/ai-products.png"
+    clean = {
+        "id": product.get("id"),
+        "category_id": product.get("category_id"),
+        "category": product.get("category"),
+        "name": product.get("name"),
+        "price": product.get("price"),
+        "old_price": product.get("old_price"),
+        "badge": product.get("badge"),
+        "rating": product.get("rating"),
+        "stock": product_total_stock(sizes, product.get("stock")),
+        "product_sizes": sizes,
+        "image": image,
+        "images": [image],
+        "crop": product.get("crop") or "center",
+        "description": product.get("description") or "",
+        "active": product.get("active"),
+    }
+    if full:
+        clean["images"] = gallery
+        clean["ai_images"] = json_list(product.get("ai_images"))
+        clean["ai_prompts"] = json_list(product.get("ai_prompts"))
+        clean["ai_type"] = product.get("ai_type") or "top"
+    return clean
 
 
 def add_product_size_stock(cur, product_id, size, qty):
@@ -622,16 +655,9 @@ def public_payload():
     )
     public_products = []
     for product in products:
-        sizes = public_size_rows(product_sizes(product))
-        if product_sizes(product) and not sizes:
-            continue
-        product["product_sizes"] = sizes
-        product["stock"] = product_total_stock(sizes, product.get("stock"))
-        product["ai_images"] = json_list(product.get("ai_images"))
-        product["ai_prompts"] = json_list(product.get("ai_prompts"))
-        product["images"] = product["ai_images"] or product_image_list(product)
-        product["image"] = product["images"][0]
-        public_products.append(product)
+        clean_product = public_product_record(product, full=False)
+        if clean_product:
+            public_products.append(clean_product)
     products = public_products
     ads = rows(cur.execute("SELECT * FROM ads WHERE active = 1 ORDER BY sort_order, id"))
     raw_settings = {row["key"]: row["value"] for row in cur.execute("SELECT key, value FROM settings")}
@@ -658,9 +684,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
+        use_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower() and len(body) > 1024
+        if use_gzip:
+            body = gzip.compress(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.cors_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -707,6 +739,25 @@ class Handler(BaseHTTPRequestHandler):
     def handle_get_api(self, path):
         if path == "/api/public/bootstrap":
             return self.send_json(200, public_payload())
+
+        if path.startswith("/api/public/products/"):
+            product_id = int(path.rsplit("/", 1)[1])
+            conn = db()
+            cur = conn.cursor()
+            product = cur.execute(
+                """
+                SELECT p.*, c.name AS category
+                FROM products p
+                LEFT JOIN categories c ON c.id = p.category_id
+                WHERE p.id = ? AND p.active = 1 AND COALESCE(p.stock, 0) > 0
+                """,
+                (product_id,),
+            ).fetchone()
+            conn.close()
+            clean_product = public_product_record(product, full=True) if product else None
+            if not clean_product:
+                return self.send_json(404, {"error": "Product not found"})
+            return self.send_json(200, {"product": clean_product})
 
         if path == "/api/customer/me":
             user = require_session(self.headers, "customer")
