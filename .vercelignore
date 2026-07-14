@@ -1,0 +1,6 @@
+oneten.sqlite3
+supabase_full_export.sql
+server_sqlite.py
+requirements.txt
+__pycache__/
+*.pyc

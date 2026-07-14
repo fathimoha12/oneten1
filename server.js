@@ -786,7 +786,20 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+let initPromise = null;
+
+function ensureInit() {
+  if (!initPromise) {
+    initPromise = initDb().catch((error) => {
+      databaseStartupError = error.message || String(error);
+      console.error("Database startup check failed:", databaseStartupError);
+    });
+  }
+  return initPromise;
+}
+
+async function handleRequest(req, res) {
+  await ensureInit();
   const pathname = decodeURIComponent(new URL(req.url, `http://${req.headers.host || "localhost"}`).pathname);
   try {
     if (req.method === "OPTIONS") return cors(res);
@@ -800,15 +813,19 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     return sendJson(req, res, error.status || 500, { error: error.message || "Server error" });
   }
-});
+}
 
-initDb()
-  .catch((error) => {
-    databaseStartupError = error.message || String(error);
-    console.error("Database startup check failed:", databaseStartupError);
-  })
-  .finally(() => {
+function startServer() {
+  ensureInit().finally(() => {
+    const server = http.createServer(handleRequest);
     server.listen(PORT, HOST, () => {
       console.log(`ONE TEN Node backend running on ${HOST}:${PORT}`);
     });
   });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = handleRequest;
