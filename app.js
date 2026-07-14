@@ -23,8 +23,14 @@ function api(path, options = {}) {
 
   if (typeof fetch === "function") {
     return fetch(apiUrl(path), { ...options, headers }).then(async (response) => {
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Request failed");
+      const text = await response.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = {};
+      }
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
       return data;
     });
   }
