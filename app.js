@@ -157,17 +157,18 @@ function App() {
   function loadPublic() {
     api("/api/public/bootstrap")
       .then((data) => {
-        setProducts(data.products || []);
         setCategories(data.categories || []);
         setAds(data.ads || []);
         setSettings(data.settings || {});
       })
       .catch(() => {
-        setProducts([]);
         setCategories([]);
         setAds([]);
         setSettings({});
       });
+    api("/api/public/products")
+      .then((data) => setProducts(data.products || []))
+      .catch(() => setProducts([]));
   }
 
   function loadCustomer() {
