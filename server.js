@@ -18,11 +18,13 @@ if (!DATABASE_URL.trim()) {
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: DATABASE_URL.includes("supabase.co") || process.env.PGSSLMODE === "require" ? { rejectUnauthorized: false } : undefined,
+  ssl: DATABASE_URL.trim() && process.env.PGSSL !== "false" ? { rejectUnauthorized: false } : undefined,
   max: Number(process.env.PG_POOL_MAX || 6),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000,
 });
+
+let databaseStartupError = "";
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -172,6 +174,10 @@ async function withClient(callback) {
 
 async function initDb() {
   if (!DATABASE_URL.trim()) return;
+  if (process.env.INIT_DB_ON_START !== "1") {
+    await query("SELECT 1");
+    return;
+  }
   const schemaPath = path.join(ROOT, "supabase_schema.sql");
   if (fs.existsSync(schemaPath)) {
     await query(fs.readFileSync(schemaPath, "utf8"));
@@ -375,7 +381,14 @@ function cors(res) {
 }
 
 async function handleGet(req, res, pathname) {
-  if (pathname === "/api/health") return sendJson(req, res, 200, { ok: true, runtime: "node", database: DATABASE_URL.trim() ? "configured" : "missing" });
+  if (pathname === "/api/health") {
+    return sendJson(req, res, 200, {
+      ok: !databaseStartupError,
+      runtime: "node",
+      database: DATABASE_URL.trim() ? (databaseStartupError ? "error" : "configured") : "missing",
+      error: databaseStartupError,
+    });
+  }
   if (pathname === "/api/public/bootstrap") return sendJson(req, res, 200, await publicPayload(false));
   if (pathname === "/api/public/products") return sendJson(req, res, 200, { products: await publicProducts() });
 
@@ -790,12 +803,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 initDb()
-  .then(() => {
+  .catch((error) => {
+    databaseStartupError = error.message || String(error);
+    console.error("Database startup check failed:", databaseStartupError);
+  })
+  .finally(() => {
     server.listen(PORT, HOST, () => {
       console.log(`ONE TEN Node backend running on ${HOST}:${PORT}`);
     });
-  })
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
   });
