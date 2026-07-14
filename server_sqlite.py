@@ -27,6 +27,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT, "oneten.sqlite3")
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL") or ""
 USE_POSTGRES = bool(DATABASE_URL.strip())
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "30000"))
 PORT = int(os.environ.get("PORT", "4181"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
@@ -104,7 +105,7 @@ def adapt_postgres_params(query, params):
     if not USE_POSTGRES or Jsonb is None or not params:
         return params
     lowered = query.lower()
-    if "products" not in lowered or not any(name in lowered for name in ("images", "ai_images", "ai_prompts")):
+    if "products" not in lowered or not any(name in lowered for name in ("images", "ai_images", "ai_prompts", "product_sizes")):
         return params
     adapted = []
     for value in params:
@@ -121,9 +122,29 @@ def adapt_postgres_params(query, params):
 def db():
     if USE_POSTGRES:
         return PostgresConnection()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=max(1, SQLITE_BUSY_TIMEOUT_MS // 1000))
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def configure_sqlite_database(conn):
+    if USE_POSTGRES:
+        return
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    except sqlite3.OperationalError:
+        pass
+
+
+def database_error_message(exc):
+    message = str(exc)
+    if not USE_POSTGRES and "database is locked" in message.lower():
+        return "SQLite database is locked. On Render, set DATABASE_URL to your Supabase/Postgres connection string, then redeploy the backend."
+    return message
 
 
 def rows(cursor):
@@ -158,6 +179,65 @@ def json_list(value):
         return data if isinstance(data, list) else []
     except (TypeError, json.JSONDecodeError):
         return []
+
+
+def product_sizes(value):
+    source = value.get("product_sizes", []) if isinstance(value, dict) else value
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except json.JSONDecodeError:
+            source = []
+    if not isinstance(source, list):
+        return []
+    clean = {}
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        size = str(item.get("size", "")).strip().upper()
+        if not size:
+            continue
+        try:
+            stock = max(0, int(item.get("stock", 0) or 0))
+        except (TypeError, ValueError):
+            stock = 0
+        clean[size] = clean.get(size, 0) + stock
+    return [{"size": size, "stock": stock} for size, stock in clean.items()]
+
+
+def product_total_stock(size_rows, fallback=0):
+    if size_rows:
+        return sum(int(item.get("stock") or 0) for item in size_rows)
+    return max(0, int(fallback or 0))
+
+
+def public_size_rows(size_rows):
+    return [item for item in size_rows if int(item.get("stock") or 0) > 0]
+
+
+def add_product_size_stock(cur, product_id, size, qty):
+    qty = int(qty or 0)
+    if qty <= 0:
+        return
+    product = cur.execute("SELECT stock, product_sizes FROM products WHERE id = ?", (product_id,)).fetchone()
+    if not product:
+        return
+    sizes = product_sizes(product)
+    if sizes and str(size or "").strip():
+        selected = str(size or "").strip().upper()
+        found = False
+        for item in sizes:
+            if item["size"] == selected:
+                item["stock"] = int(item.get("stock") or 0) + qty
+                found = True
+                break
+        if not found:
+            sizes.append({"size": selected, "stock": qty})
+        new_stock = product_total_stock(sizes)
+        cur.execute("UPDATE products SET stock = ?, product_sizes = ? WHERE id = ?", (new_stock, json.dumps(sizes), product_id))
+    else:
+        cur.execute("UPDATE products SET stock = stock + ? WHERE id = ?", (qty, product_id))
+    sync_product_visibility(cur, product_id)
 
 
 AI_TYPE_LABELS = {
@@ -249,10 +329,12 @@ def normalize_phone(phone):
 
 
 def sync_product_visibility(cur, product_id):
-    row = cur.execute("SELECT stock FROM products WHERE id = ?", (product_id,)).fetchone()
+    row = cur.execute("SELECT stock, product_sizes FROM products WHERE id = ?", (product_id,)).fetchone()
     if not row:
         return
-    cur.execute("UPDATE products SET active = ? WHERE id = ?", (db_bool(int(row["stock"] or 0) > 0), product_id))
+    size_rows = product_sizes(row)
+    stock = product_total_stock(size_rows, row["stock"])
+    cur.execute("UPDATE products SET stock = ?, active = ? WHERE id = ?", (stock, db_bool(stock > 0), product_id))
 
 
 def recalc_order(cur, order_id):
@@ -284,6 +366,7 @@ def init_db():
         return
 
     conn = db()
+    configure_sqlite_database(conn)
     cur = conn.cursor()
     cur.executescript(
         """
@@ -323,6 +406,7 @@ def init_db():
           badge TEXT DEFAULT '',
           rating TEXT DEFAULT '4.8',
           stock INTEGER DEFAULT 0,
+          product_sizes TEXT DEFAULT '[]',
           image TEXT NOT NULL,
           images TEXT DEFAULT '[]',
           crop TEXT DEFAULT 'center',
@@ -365,6 +449,7 @@ def init_db():
           price REAL NOT NULL,
           requested_qty INTEGER DEFAULT 1,
           qty INTEGER NOT NULL,
+          size TEXT DEFAULT '',
           status TEXT DEFAULT 'Processing',
           FOREIGN KEY(order_id) REFERENCES orders(id),
           FOREIGN KEY(product_id) REFERENCES products(id)
@@ -392,9 +477,13 @@ def init_db():
         cur.execute("UPDATE order_items SET requested_qty = qty WHERE requested_qty IS NULL OR requested_qty = 1")
     if "status" not in order_item_cols:
         cur.execute("ALTER TABLE order_items ADD COLUMN status TEXT DEFAULT 'Processing'")
+    if "size" not in order_item_cols:
+        cur.execute("ALTER TABLE order_items ADD COLUMN size TEXT DEFAULT ''")
     product_cols = [row["name"] for row in cur.execute("PRAGMA table_info(products)")]
     if "images" not in product_cols:
         cur.execute("ALTER TABLE products ADD COLUMN images TEXT DEFAULT '[]'")
+    if "product_sizes" not in product_cols:
+        cur.execute("ALTER TABLE products ADD COLUMN product_sizes TEXT DEFAULT '[]'")
     if "ai_type" not in product_cols:
         cur.execute("ALTER TABLE products ADD COLUMN ai_type TEXT DEFAULT 'top'")
     if "ai_images" not in product_cols:
@@ -531,11 +620,19 @@ def public_payload():
             """
         )
     )
+    public_products = []
     for product in products:
+        sizes = public_size_rows(product_sizes(product))
+        if product_sizes(product) and not sizes:
+            continue
+        product["product_sizes"] = sizes
+        product["stock"] = product_total_stock(sizes, product.get("stock"))
         product["ai_images"] = json_list(product.get("ai_images"))
         product["ai_prompts"] = json_list(product.get("ai_prompts"))
         product["images"] = product["ai_images"] or product_image_list(product)
         product["image"] = product["images"][0]
+        public_products.append(product)
+    products = public_products
     ads = rows(cur.execute("SELECT * FROM ads WHERE active = 1 ORDER BY sort_order, id"))
     raw_settings = {row["key"]: row["value"] for row in cur.execute("SELECT key, value FROM settings")}
     settings = {key: value for key, value in raw_settings.items() if key not in SECRET_SETTING_KEYS}
@@ -582,25 +679,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_get_api(path)
             return self.serve_file(path)
         except Exception as exc:
-            return self.send_json(500, {"error": str(exc)})
+            return self.send_json(500, {"error": database_error_message(exc)})
 
     def do_POST(self):
         try:
             return self.handle_write_api("POST", urlparse(self.path).path)
         except Exception as exc:
-            return self.send_json(500, {"error": str(exc)})
+            return self.send_json(500, {"error": database_error_message(exc)})
 
     def do_PUT(self):
         try:
             return self.handle_write_api("PUT", urlparse(self.path).path)
         except Exception as exc:
-            return self.send_json(500, {"error": str(exc)})
+            return self.send_json(500, {"error": database_error_message(exc)})
 
     def do_DELETE(self):
         try:
             return self.handle_write_api("DELETE", urlparse(self.path).path)
         except Exception as exc:
-            return self.send_json(500, {"error": str(exc)})
+            return self.send_json(500, {"error": database_error_message(exc)})
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -663,6 +760,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
             for product in admin_products:
+                sizes = product_sizes(product)
+                product["product_sizes"] = sizes
+                product["stock"] = product_total_stock(sizes, product.get("stock"))
                 product["ai_images"] = json_list(product.get("ai_images"))
                 product["ai_prompts"] = json_list(product.get("ai_prompts"))
                 product["images"] = product["ai_images"] or product_image_list(product)
@@ -764,7 +864,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"error": "Cart is empty"})
             conn = db()
             cur = conn.cursor()
-            product_ids = [int(item["id"]) for item in items]
+            product_ids = list({int(item["id"]) for item in items})
             placeholders = ",".join("?" for _ in product_ids)
             products = {row["id"]: dict(row) for row in cur.execute(f"SELECT * FROM products WHERE id IN ({placeholders})", product_ids)}
             total = 0
@@ -773,26 +873,45 @@ class Handler(BaseHTTPRequestHandler):
                 product = products.get(int(item["id"]))
                 if product:
                     qty = max(1, int(item.get("qty", 1)))
-                    stock = int(product.get("stock") or 0)
+                    selected_size = str(item.get("size", "") or "").strip().upper()
+                    size_rows = product_sizes(product)
+                    stock = product_total_stock(size_rows, product.get("stock"))
                     if product.get("active") not in (1, True) or stock <= 0:
                         conn.close()
                         return self.send_json(409, {"error": f"{product['name']} is out of stock"})
-                    if qty > stock:
+                    if size_rows:
+                        size_row = next((row for row in size_rows if row["size"] == selected_size), None)
+                        if not selected_size or not size_row or int(size_row.get("stock") or 0) <= 0:
+                            conn.close()
+                            return self.send_json(409, {"error": f"Size {selected_size or 'selected'} is not available for {product['name']}"})
+                        size_stock = int(size_row.get("stock") or 0)
+                        if qty > size_stock:
+                            conn.close()
+                            return self.send_json(409, {"error": f"Only {size_stock} left for {product['name']} size {selected_size}"})
+                    elif qty > stock:
                         conn.close()
                         return self.send_json(409, {"error": f"Only {stock} left for {product['name']}"})
                     total += float(product["price"]) * qty
-                    prepared_items.append((product, qty))
+                    prepared_items.append((product, qty, selected_size, size_rows))
             cur.execute(
                 "INSERT INTO orders (customer_id, customer_name, phone, address, status, total, created_at) VALUES (?, ?, ?, ?, 'Processing', ?, ?)",
                 (customer["id"], customer["name"], data.get("phone", ""), data.get("address", ""), total, now()),
             )
             order_id = cur.lastrowid
-            for product, qty in prepared_items:
+            for product, qty, selected_size, size_rows in prepared_items:
                 cur.execute(
-                    "INSERT INTO order_items (order_id, product_id, product_name, product_image, price, requested_qty, qty, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'Processing')",
-                    (order_id, product["id"], product["name"], product["image"], product["price"], qty, qty),
+                    "INSERT INTO order_items (order_id, product_id, product_name, product_image, price, requested_qty, qty, size, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Processing')",
+                    (order_id, product["id"], product["name"], product["image"], product["price"], qty, qty, selected_size),
                 )
-                cur.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (qty, product["id"]))
+                if size_rows:
+                    for row in size_rows:
+                        if row["size"] == selected_size:
+                            row["stock"] = max(0, int(row.get("stock") or 0) - qty)
+                            break
+                    new_stock = product_total_stock(size_rows)
+                    cur.execute("UPDATE products SET stock = ?, product_sizes = ? WHERE id = ?", (new_stock, json.dumps(size_rows), product["id"]))
+                else:
+                    cur.execute("UPDATE products SET stock = stock - ? WHERE id = ?", (qty, product["id"]))
                 sync_product_visibility(cur, product["id"])
             conn.commit()
             conn.close()
@@ -848,11 +967,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/products" and method == "POST":
             data = self.body()
             product_images = product_image_list(data)
+            size_rows = product_sizes(data)
+            stock = product_total_stock(size_rows, data.get("stock", 0))
             cur.execute(
                 """
                 INSERT INTO products
-                (category_id, name, price, old_price, badge, rating, stock, image, images, crop, description, ai_type, ai_images, ai_prompts, active, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (category_id, name, price, old_price, badge, rating, stock, product_sizes, image, images, crop, description, ai_type, ai_images, ai_prompts, active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(data.get("category_id") or 1),
@@ -861,7 +982,8 @@ class Handler(BaseHTTPRequestHandler):
                     float(data["old_price"]) if data.get("old_price") else None,
                     data.get("badge", ""),
                     data.get("rating", "4.8"),
-                    int(data.get("stock", 0) or 0),
+                    stock,
+                    json.dumps(size_rows),
                     product_images[0],
                     json.dumps(product_images),
                     data.get("crop", "center"),
@@ -932,10 +1054,12 @@ class Handler(BaseHTTPRequestHandler):
             if method == "PUT":
                 data = self.body()
                 product_images = product_image_list(data)
+                size_rows = product_sizes(data)
+                stock = product_total_stock(size_rows, data.get("stock", 0))
                 cur.execute(
                     """
                     UPDATE products
-                    SET category_id=?, name=?, price=?, old_price=?, badge=?, rating=?, stock=?, image=?, images=?, crop=?, description=?, ai_type=?, ai_images=?, ai_prompts=?, active=?
+                    SET category_id=?, name=?, price=?, old_price=?, badge=?, rating=?, stock=?, product_sizes=?, image=?, images=?, crop=?, description=?, ai_type=?, ai_images=?, ai_prompts=?, active=?
                     WHERE id=?
                     """,
                     (
@@ -945,7 +1069,8 @@ class Handler(BaseHTTPRequestHandler):
                         float(data["old_price"]) if data.get("old_price") else None,
                         data.get("badge", ""),
                         data.get("rating", "4.8"),
-                        int(data.get("stock", 0) or 0),
+                        stock,
+                        json.dumps(size_rows),
                         product_images[0],
                         json.dumps(product_images),
                         data.get("crop", "center"),
@@ -994,8 +1119,7 @@ class Handler(BaseHTTPRequestHandler):
             if status == "Cancelled":
                 active_items = rows(cur.execute("SELECT * FROM order_items WHERE order_id = ? AND status != 'Cancelled'", (order_id,)))
                 for item in active_items:
-                    cur.execute("UPDATE products SET stock = stock + ? WHERE id = ?", (int(item.get("qty") or 0), item["product_id"]))
-                    sync_product_visibility(cur, item["product_id"])
+                    add_product_size_stock(cur, item["product_id"], item.get("size", ""), int(item.get("qty") or 0))
                 cur.execute("UPDATE order_items SET qty = 0, status = 'Cancelled' WHERE order_id = ?", (order_id,))
                 cur.execute("UPDATE orders SET status = 'Cancelled', total = 0 WHERE id = ?", (order_id,))
             else:
@@ -1023,16 +1147,30 @@ class Handler(BaseHTTPRequestHandler):
             old_reserved = int(item.get("qty") or 0) if item.get("status") != "Cancelled" else 0
             new_reserved = new_qty if new_status != "Cancelled" else 0
             stock_delta = old_reserved - new_reserved
-            product = cur.execute("SELECT stock, name FROM products WHERE id = ?", (item["product_id"],)).fetchone()
+            product = cur.execute("SELECT stock, name, product_sizes FROM products WHERE id = ?", (item["product_id"],)).fetchone()
             if not product:
                 conn.close()
                 return self.send_json(404, {"error": "Product not found"})
-            new_stock = int(product["stock"] or 0) + stock_delta
-            if new_stock < 0:
-                conn.close()
-                return self.send_json(409, {"error": f"Not enough stock for {product['name']}"})
-
-            cur.execute("UPDATE products SET stock = ? WHERE id = ?", (new_stock, item["product_id"]))
+            size_rows = product_sizes(product)
+            item_size = str(item.get("size", "") or "").strip().upper()
+            if size_rows and item_size:
+                size_row = next((row for row in size_rows if row["size"] == item_size), None)
+                if stock_delta >= 0:
+                    add_product_size_stock(cur, item["product_id"], item_size, stock_delta)
+                else:
+                    needed = abs(stock_delta)
+                    if not size_row or int(size_row.get("stock") or 0) < needed:
+                        conn.close()
+                        available = int((size_row or {}).get("stock") or 0)
+                        return self.send_json(409, {"error": f"Only {available} left for {product['name']} size {item_size}"})
+                    size_row["stock"] = int(size_row.get("stock") or 0) - needed
+                    cur.execute("UPDATE products SET stock = ?, product_sizes = ? WHERE id = ?", (product_total_stock(size_rows), json.dumps(size_rows), item["product_id"]))
+            else:
+                new_stock = int(product["stock"] or 0) + stock_delta
+                if new_stock < 0:
+                    conn.close()
+                    return self.send_json(409, {"error": f"Not enough stock for {product['name']}"})
+                cur.execute("UPDATE products SET stock = ? WHERE id = ?", (new_stock, item["product_id"]))
             sync_product_visibility(cur, item["product_id"])
             cur.execute("UPDATE order_items SET qty = ?, status = ? WHERE id = ?", (new_qty, new_status, item_id))
             recalc_order(cur, item["order_id"])

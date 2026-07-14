@@ -84,6 +84,7 @@ const emptyProduct = {
   badge: "New",
   rating: "4.8",
   stock: "10",
+  product_sizes: [],
   image: "assets/ai-products.png",
   images: [],
   crop: "center",
@@ -93,6 +94,8 @@ const emptyProduct = {
   ai_prompts: [],
   active: true,
 };
+
+const commonSizes = ["XS", "S", "M", "L", "XL", "XXL", "28", "30", "32", "34", "36", "38", "40", "42", "One Size"];
 
 const aiProductTypes = [
   ["top", "Shirt / upper garment"],
@@ -275,7 +278,8 @@ function ProductsAdmin({ data, refresh, setMessage }) {
   function save(event) {
     event.preventDefault();
     const images = getProductImages(form);
-    const body = { ...form, image: images[0], images, category_id: form.category_id || (data.categories[0] && data.categories[0].id) || 1 };
+    const productSizes = normalizeProductSizes(form.product_sizes);
+    const body = { ...form, product_sizes: productSizes, stock: productSizes.length ? productSizes.reduce((sum, item) => sum + Number(item.stock || 0), 0) : form.stock, image: images[0], images, category_id: form.category_id || (data.categories[0] && data.categories[0].id) || 1 };
     const path = editing ? `/api/admin/products/${editing}` : "/api/admin/products";
     adminApi(path, { method: editing ? "PUT" : "POST", body: JSON.stringify(body) })
       .then(() => {
@@ -290,7 +294,7 @@ function ProductsAdmin({ data, refresh, setMessage }) {
 
   function edit(product) {
     setEditing(product.id);
-    setForm({ ...emptyProduct, ...product, image: getProductImages(product)[0], images: getProductImages(product), old_price: product.old_price || "", category_id: product.category_id || "", ai_images: Array.isArray(product.ai_images) ? product.ai_images : [], ai_prompts: Array.isArray(product.ai_prompts) ? product.ai_prompts : [], ai_type: product.ai_type || "top" });
+    setForm({ ...emptyProduct, ...product, product_sizes: normalizeProductSizes(product.product_sizes), image: getProductImages(product)[0], images: getProductImages(product), old_price: product.old_price || "", category_id: product.category_id || "", ai_images: Array.isArray(product.ai_images) ? product.ai_images : [], ai_prompts: Array.isArray(product.ai_prompts) ? product.ai_prompts : [], ai_type: product.ai_type || "top" });
     setFormOpen(true);
   }
 
@@ -342,6 +346,38 @@ function ProductsAdmin({ data, refresh, setMessage }) {
       .finally(() => setAiBusy(false));
   }
 
+  function normalizeProductSizes(value) {
+    const clean = {};
+    (Array.isArray(value) ? value : []).forEach((item) => {
+      const size = String(item && item.size || "").trim().toUpperCase();
+      const stock = Math.max(0, Number(item && item.stock) || 0);
+      if (size && stock > 0) clean[size] = (clean[size] || 0) + stock;
+    });
+    return Object.entries(clean).map(([size, stock]) => ({ size, stock }));
+  }
+
+  function updateSizeRow(index, field, value) {
+    setForm((current) => {
+      const rows = Array.isArray(current.product_sizes) ? current.product_sizes.slice() : [];
+      rows[index] = { ...(rows[index] || { size: "", stock: 0 }), [field]: field === "stock" ? Math.max(0, Number(value) || 0) : value };
+      const normalized = field === "size" ? rows : rows;
+      const total = normalized.reduce((sum, item) => sum + Math.max(0, Number(item.stock) || 0), 0);
+      return { ...current, product_sizes: normalized, stock: String(total || current.stock || 0) };
+    });
+  }
+
+  function addSizeRow(size = "") {
+    setForm((current) => ({ ...current, product_sizes: [...(Array.isArray(current.product_sizes) ? current.product_sizes : []), { size, stock: 1 }] }));
+  }
+
+  function removeSizeRow(index) {
+    setForm((current) => {
+      const rows = (Array.isArray(current.product_sizes) ? current.product_sizes : []).filter((_, rowIndex) => rowIndex !== index);
+      const total = rows.reduce((sum, item) => sum + Math.max(0, Number(item.stock) || 0), 0);
+      return { ...current, product_sizes: rows, stock: String(total || 0) };
+    });
+  }
+
   const previewImages = getProductImages(form).filter((image) => image !== "assets/ai-products.png");
   const publicProducts = (data.products || []).filter((product) => Number(product.active) === 1 && Number(product.stock || 0) > 0);
   const inactiveProducts = (data.products || []).filter((product) => Number(product.active) !== 1 || Number(product.stock || 0) <= 0);
@@ -349,18 +385,21 @@ function ProductsAdmin({ data, refresh, setMessage }) {
   const normalizedQuery = productQuery.trim().toLowerCase();
   const visibleProducts = currentProducts.filter((product) => {
     if (!normalizedQuery) return true;
-    return [product.name, product.category, product.description, product.badge, product.ai_type]
+    const sizeSummary = normalizeProductSizes(product.product_sizes).map((item) => `${item.size} ${item.stock}`).join(" ");
+    return [product.name, product.category, product.description, product.badge, product.ai_type, sizeSummary]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(normalizedQuery));
   });
 
   function ProductRow(product) {
     const isPublic = Number(product.active) === 1 && Number(product.stock || 0) > 0;
+    const sizeText = normalizeProductSizes(product.product_sizes).map((item) => `${item.size}:${item.stock}`).join(" / ");
     return React.createElement("article", { className: `admin-row ${isPublic ? "is-public" : "is-inactive"}`, key: product.id },
       React.createElement("img", { src: getProductImages(product)[0], alt: product.name, style: { objectPosition: product.crop || "center" } }),
       React.createElement("div", null,
         React.createElement("strong", null, product.name),
         React.createElement("span", null, `${product.category} / $${product.price} / Stock ${product.stock} / ${getProductImages(product).length} images`),
+        sizeText && React.createElement("span", { className: "admin-size-summary" }, sizeText),
         React.createElement("em", { className: isPublic ? "product-state public" : "product-state inactive" }, isPublic ? "Public / Active" : Number(product.stock || 0) <= 0 ? "Inactive / Stock finished" : "Inactive / Hidden"),
         (product.ai_prompts || []).length > 0 && React.createElement("em", { className: "product-state ai-ready" }, `AI ${product.ai_type || "style"} ready`)
       ),
@@ -380,7 +419,22 @@ function ProductsAdmin({ data, refresh, setMessage }) {
       React.createElement("input", { required: true, value: form.name, onChange: (event) => setForm({ ...form, name: event.target.value }), placeholder: "Product name" }),
       React.createElement("select", { value: form.category_id, onChange: (event) => setForm({ ...form, category_id: event.target.value }) }, React.createElement("option", { value: "" }, "Choose category"), data.categories.map((cat) => React.createElement("option", { key: cat.id, value: cat.id }, cat.name))),
       React.createElement("div", { className: "two-col" }, React.createElement("input", { value: form.price, onChange: (event) => setForm({ ...form, price: event.target.value }), placeholder: "Price 1-10" }), React.createElement("input", { value: form.old_price || "", onChange: (event) => setForm({ ...form, old_price: event.target.value }), placeholder: "Old price" })),
-      React.createElement("div", { className: "two-col" }, React.createElement("input", { value: form.badge || "", onChange: (event) => setForm({ ...form, badge: event.target.value }), placeholder: "Badge" }), React.createElement("input", { value: form.stock, onChange: (event) => setForm({ ...form, stock: event.target.value }), placeholder: "Stock" })),
+      React.createElement("div", { className: "two-col" }, React.createElement("input", { value: form.badge || "", onChange: (event) => setForm({ ...form, badge: event.target.value }), placeholder: "Badge" }), React.createElement("input", { readOnly: normalizeProductSizes(form.product_sizes).length > 0, value: normalizeProductSizes(form.product_sizes).length ? normalizeProductSizes(form.product_sizes).reduce((sum, item) => sum + Number(item.stock || 0), 0) : form.stock, onChange: (event) => setForm({ ...form, stock: event.target.value }), placeholder: "Total stock" })),
+      React.createElement("div", { className: "size-stock-builder" },
+        React.createElement("div", { className: "size-stock-head" },
+          React.createElement("div", null, React.createElement("strong", null, "Size Stock"), React.createElement("span", null, "Dooro size kasta iyo inta ka taalla")),
+          React.createElement("button", { onClick: () => addSizeRow(), type: "button" }, "Add Size")
+        ),
+        React.createElement("div", { className: "quick-size-list" }, commonSizes.map((size) => React.createElement("button", { key: size, onClick: () => addSizeRow(size), type: "button" }, size))),
+        (Array.isArray(form.product_sizes) && form.product_sizes.length) ? form.product_sizes.map((item, index) => React.createElement("div", { className: "size-stock-row", key: index },
+          React.createElement("select", { value: item.size || "", onChange: (event) => updateSizeRow(index, "size", event.target.value) },
+            React.createElement("option", { value: "" }, "Choose size"),
+            commonSizes.map((size) => React.createElement("option", { key: size, value: size.toUpperCase() }, size))
+          ),
+          React.createElement("input", { min: "0", onChange: (event) => updateSizeRow(index, "stock", event.target.value), placeholder: "Qty", type: "number", value: item.stock }),
+          React.createElement("button", { onClick: () => removeSizeRow(index), type: "button" }, "Remove")
+        )) : React.createElement("p", { className: "size-stock-empty" }, "Haddii product-ku leeyahay size, halkan ku dar. Haddii kale total stock-ka kore ayaa la isticmaalayaa.")
+      ),
       React.createElement("label", { className: "file-picker" }, "Choose product images",
         React.createElement("input", { accept: "image/*", multiple: true, onChange: chooseFile, type: "file" })
       ),

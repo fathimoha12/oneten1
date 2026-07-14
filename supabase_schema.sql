@@ -45,6 +45,7 @@ create table if not exists products (
   badge text default '',
   rating text default '4.8',
   stock integer default 0,
+  product_sizes jsonb default '[]'::jsonb,
   image text not null,
   images jsonb default '[]'::jsonb,
   crop text default 'center',
@@ -88,6 +89,7 @@ create table if not exists order_items (
   price numeric(10,2) not null,
   requested_qty integer default 1,
   qty integer not null,
+  size text default '',
   status text default 'Processing'
 );
 
@@ -101,6 +103,9 @@ create table if not exists newsletter_subscribers (
   phone text unique not null,
   created_at text not null
 );
+
+alter table products add column if not exists product_sizes jsonb default '[]'::jsonb;
+alter table order_items add column if not exists size text default '';
 
 create index if not exists idx_products_category on products(category_id);
 create index if not exists idx_products_active_stock on products(active, stock);
