@@ -4,3 +4,4 @@ server_sqlite.py
 requirements.txt
 __pycache__/
 *.pyc
+api/

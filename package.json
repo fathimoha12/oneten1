@@ -2,14 +2,17 @@
   "name": "one-ten-react-ecommerce",
   "version": "1.0.0",
   "private": true,
-  "description": "React JS ecommerce landing page for ONE TEN men's fashion.",
+  "description": "Next.js ecommerce app for ONE TEN men's fashion.",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
+    "next": "^14.2.5",
     "pg": "^8.12.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
